@@ -9,13 +9,13 @@ from utils import evaluate_performance
 import nltk
 from nltk.corpus import stopwords
 
-nltk.download('stopwords')
-stop_words = set(stopwords.words('english'))
+nltk.download("stopwords")
+stop_words = set(stopwords.words("english"))
 
 DATA_DIR = "data/"
 OUTPUT_DIR = "output/"
 MODEL_DIR = "models/bluebert/"
-ANNOTATED_DATA_PATH = "data/annotated_corpus.csv"
+ANNOTATED_DATA_PATH = os.path.join(DATA_DIR, "bio_tagged_output.csv")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -35,9 +35,11 @@ id2label = {v: k for k, v in label2id.items()}
 
 model_name = "bionlp/bluebert_pubmed_mimic_uncased_L-12_H-768_A-12"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForTokenClassification.from_pretrained(model_name, num_labels=len(label2id), id2label=id2label, label2id=label2id)
+model = AutoModelForTokenClassification.from_pretrained(
+    model_name, num_labels=len(label2id), id2label=id2label, label2id=label2id
+)
 
-# Preprocessing
+# Preprocess raw .txt files
 def preprocess_text_files(directory_path):
     preprocessed_data = []
     for filename in os.listdir(directory_path):
@@ -45,13 +47,9 @@ def preprocess_text_files(directory_path):
             file_path = os.path.join(directory_path, filename)
             with open(file_path, "r", encoding="utf-8") as file:
                 text_data = file.read()
-            text_data = remove_negative_phrases(text_data)
-            cleaned_text = clean_text(text_data)
+            cleaned_text = clean_text(remove_negative_phrases(text_data))
             preprocessed_data.append({"Filename": filename, "Text": cleaned_text})
     return pd.DataFrame(preprocessed_data)
-
-preprocessed_df = preprocess_text_files(DATA_DIR)
-preprocessed_df.to_csv(os.path.join(OUTPUT_DIR, "preprocessed_data.csv"), index=False)
 
 # Dataset Class
 class CustomNERDataset(Dataset):
@@ -64,7 +62,7 @@ class CustomNERDataset(Dataset):
     def __getitem__(self, idx):
         encoding = self.tokenizer(self.texts[idx], padding="max_length", truncation=True, max_length=self.max_len, return_offsets_mapping=True)
         label_ids = [label2id.get(tag, 0) for tag in self.labels[idx]]
-        label_ids = label_ids + [0] * (self.max_len - len(label_ids))
+        label_ids += [0] * (self.max_len - len(label_ids))
         encoding.pop("offset_mapping")
         encoding["labels"] = torch.tensor(label_ids)
         return {key: torch.tensor(val) for key, val in encoding.items()}
@@ -76,9 +74,17 @@ class CustomNERDataset(Dataset):
 df = pd.read_csv(ANNOTATED_DATA_PATH)
 texts = df['text'].tolist()
 bio_labels = df['bio_labels'].apply(lambda x: x.split()).tolist()
-train_texts, val_texts, train_labels, val_labels = train_test_split(texts, bio_labels, test_size=0.2, random_state=42)
 
-# Pretrained extraction before fine-tuning
+# Split into 70% train, 15% val, 15% test
+train_val_texts, test_texts, train_val_labels, test_labels = train_test_split(texts, bio_labels, test_size=0.15, random_state=42)
+train_texts, val_texts, train_labels, val_labels = train_test_split(train_val_texts, train_val_labels, test_size=0.176, random_state=42)
+
+# Prepare datasets
+train_dataset = CustomNERDataset(train_texts, train_labels, tokenizer)
+val_dataset = CustomNERDataset(val_texts, val_labels, tokenizer)
+test_dataset = CustomNERDataset(test_texts, test_labels, tokenizer)
+
+# Entity extraction function
 def extract_entities(text):
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
     with torch.no_grad():
@@ -87,36 +93,61 @@ def extract_entities(text):
     tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"].squeeze())
     return [(tok, id2label.get(pred, 'O')) for tok, pred in zip(tokens, predictions)]
 
-pretrained_results = []
-for text in val_texts:
-    entities = extract_entities(text)
-    pretrained_results.append({"text": text, "predicted_entities": " ".join([f"{tok}:{tag}" for tok, tag in entities])})
-pretrained_csv = os.path.join(OUTPUT_DIR, "pretrained_extracted_entities_bluebert.csv")
-pd.DataFrame(pretrained_results).to_csv(pretrained_csv, index=False)
-print(f"Pretrained model extraction results saved to {pretrained_csv}")
-
-# Fine-tuning
-train_dataset = CustomNERDataset(train_texts, train_labels, tokenizer)
-val_dataset = CustomNERDataset(val_texts, val_labels, tokenizer)
-training_args = TrainingArguments(output_dir=MODEL_DIR, num_train_epochs=5, per_device_train_batch_size=16, save_strategy="epoch", evaluation_strategy="epoch")
+# Training
+training_args = TrainingArguments(output_dir=MODEL_DIR, num_train_epochs=10, per_device_train_batch_size=16, save_strategy="epoch", evaluation_strategy="epoch")
 trainer = Trainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=val_dataset)
 trainer.train()
 
-# Evaluation
-eval_results = trainer.predict(val_dataset)
-predicted_labels = torch.argmax(torch.tensor(eval_results.predictions), dim=2).flatten().tolist()
-true_labels = torch.tensor(eval_results.label_ids).flatten().tolist()
-metrics = evaluate_performance(true_labels, predicted_labels)
-print("Evaluation Metrics after fine-tuning:", metrics)
+# Validation evaluation
+val_results = trainer.predict(val_dataset)
+val_preds = torch.argmax(torch.tensor(val_results.predictions), dim=2).flatten().tolist()
+val_true = torch.tensor(val_results.label_ids).flatten().tolist()
+val_metrics = evaluate_performance(val_true, val_preds)
+print("Validation Metrics:", val_metrics)
 
+# Test evaluation
+test_results = trainer.predict(test_dataset)
+test_preds = torch.argmax(torch.tensor(test_results.predictions), dim=2).flatten().tolist()
+test_true = torch.tensor(test_results.label_ids).flatten().tolist()
+test_metrics = evaluate_performance(test_true, test_preds)
+print("Test Metrics:", test_metrics)
+
+# Save model
 model.save_pretrained(MODEL_DIR)
 tokenizer.save_pretrained(MODEL_DIR)
 
-# Fine-tuned extraction after training
-fine_tuned_results = []
-for text in val_texts:
-    entities = extract_entities(text)
-    fine_tuned_results.append({"text": text, "predicted_entities": " ".join([f"{tok}:{tag}" for tok, tag in entities])})
+# Inference on raw clinical text files
+raw_df = preprocess_text_files(DATA_DIR)
+results_pretrained = []
+results_finetuned = []
 
-pd.DataFrame(fine_tuned_results).to_csv(os.path.join(OUTPUT_DIR, "fine_tuned_extracted_entities_bluebert.csv"), index=False)
-print("Fine-tuned extracted entities saved.")
+for _, row in raw_df.iterrows():
+    text = row["Text"]
+
+    # Pretrained model prediction
+    pretrained_entities = extract_entities(text)
+    pretrained_str = " ".join([f"{tok}:{tag}" for tok, tag in pretrained_entities])
+    results_pretrained.append({
+        "Filename": row["Filename"],
+        "text": text,
+        "predicted_entities": pretrained_str
+    })
+
+    # Finetuned model prediction
+    finetuned_entities = extract_entities(text)
+    finetuned_str = " ".join([f"{tok}:{tag}" for tok, tag in finetuned_entities])
+    results_finetuned.append({
+        "Filename": row["Filename"],
+        "text": text,
+        "predicted_entities": finetuned_str
+    })
+
+# Save predictions to CSV
+pretrained_csv = os.path.join(OUTPUT_DIR, "pretrained_entity_extraction_results_bluebert.csv")
+finetuned_csv = os.path.join(OUTPUT_DIR, "finetuned_entity_extraction_results_bluebert.csv")
+
+pd.DataFrame(results_pretrained).to_csv(pretrained_csv, index=False)
+pd.DataFrame(results_finetuned).to_csv(finetuned_csv, index=False)
+
+print(f"Pretrained entity extraction results saved to: {pretrained_csv}")
+print(f"Finetuned entity extraction results saved to: {finetuned_csv}")

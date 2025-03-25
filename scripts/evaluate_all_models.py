@@ -2,55 +2,93 @@ import os
 import pandas as pd
 from utils import evaluate_performance
 
+# Path to your ground truth BIO-tagged dataset
+GROUND_TRUTH_PATH = "./data/bio_tagged_output.csv"
+
+# Define all models with paths to their prediction CSVs
 models = {
     "BioBERT": {
-        "pretrained": "./output/pretrained_extracted_entities_biobert.csv",
-        "fine_tuned": "./output/fine_tuned_extracted_entities_biobert.csv"
+        "pretrained": "./output/pretrained_entity_extraction_results_biobert.csv",
+        "fine_tuned": "./output/finetuned_entity_extraction_results_biobert.csv"
     },
     "BioClinicalBERT": {
-        "pretrained": "./output/pretrained_extracted_entities_bioclinicalbert.csv",
-        "fine_tuned": "./output/fine_tuned_entities_bioclinicalbert.csv"
+        "pretrained": "./output/pretrained_entity_extraction_results_bioclinicalbert.csv",
+        "fine_tuned": "./output/finetuned_entity_extraction_results_bioclinicalbert.csv"
     },
     "BlueBERT": {
-        "pretrained": "./output/pretrained_extracted_entities_bluebert.csv",
-        "fine_tuned": "./output/fine_tuned_extracted_entities_bluebert.csv"
+        "pretrained": "./output/pretrained_entity_extraction_results_bluebert.csv",
+        "fine_tuned": "./output/finetuned_entity_extraction_results_bluebert.csv"
     },
     "RoBERTa": {
-        "pretrained": "./output/pretrained_extracted_entities_roberta.csv",
-        "fine_tuned": "./output/fine_tuned_extracted_entities_roberta.csv"
+        "pretrained": "./output/pretrained_entity_extraction_results_roberta.csv",
+        "fine_tuned": "./output/finetuned_entity_extraction_results_roberta.csv"
     },
     "PubMedBERT": {
-        "pretrained": "./output/pretrained_extracted_entities_pubmedbert.csv",
-        "fine_tuned": "./output/fine_tuned_extracted_entities_pubmedbert.csv"
+        "pretrained": "./output/pretrained_entity_extraction_results_pubmedbert.csv",
+        "fine_tuned": "./output/finetuned_entity_extraction_results_pubmedbert.csv"
     }
 }
 
-# Define Label Columns
-label_columns = ["age", "gender", "disease", "symptoms", "medication", "dose", "cancer stage"]
+# Load and prepare ground truth from bio_tagged_output.csv
+def load_ground_truth():
+    df = pd.read_csv(GROUND_TRUTH_PATH)
+    df.columns = df.columns.str.strip()
+    df["Token_Index"] = df.groupby("Sentence_ID").cumcount()
+    return df
 
-# Evaluation function
-def evaluate(csv_path, model_name, stage):
-    if not os.path.exists(csv_path):
-        print(f"⚠ Warning: {stage} CSV not found for {model_name}. Skipping...")
+# Convert prediction format: "Token:LABEL Token:LABEL ..." → row-wise DataFrame
+def explode_predictions(df):
+    exploded = []
+    for _, row in df.iterrows():
+        sent_id = row.get("Sentence_ID") or row.get("Filename") or 0
+        predicted = str(row.get("predicted_entities", "")).split()
+        for i, pair in enumerate(predicted):
+            if ":" not in pair:
+                continue
+            token, label = pair.rsplit(":", 1)
+            exploded.append({
+                "Sentence_ID": sent_id,
+                "Token_Index": i,
+                "Token": token,
+                "Label": label
+            })
+    return pd.DataFrame(exploded)
+
+# Compare predicted labels with ground truth and evaluate
+def evaluate_model(model_name, phase, prediction_file, ground_truth_df):
+    if not os.path.exists(prediction_file):
+        print(f"[!] {phase} predictions for {model_name} not found. Skipping.")
         return
 
-    df = pd.read_csv(csv_path)
-    print(f"Loaded {stage} dataset for {model_name} with {len(df)} samples.")
+    pred_df = pd.read_csv(prediction_file)
+    pred_df = explode_predictions(pred_df)
 
-    df.columns = df.columns.str.strip().str.lower()
+    # Merge prediction with gold based on Sentence_ID, Token_Index, and Token
+    merged = pd.merge(
+        ground_truth_df,
+        pred_df,
+        on=["Sentence_ID", "Token_Index", "Token"],
+        how="inner",
+        suffixes=("_true", "_pred")
+    )
 
-    df['combined_text'] = df.fillna('').apply(lambda row: ' '.join(row.astype(str)), axis=1)
+    if merged.empty:
+        print(f"[!] No token match found for {model_name} ({phase}).")
+        return
 
-    true_labels = {col: df[col].apply(lambda x: set(str(x).split()) if isinstance(x, str) else set()).tolist() for col in label_columns}
-    predicted_labels = true_labels  # This is placeholder; replace with actual extraction post-processing if needed.
+    y_true = merged["Label_true"].tolist()
+    y_pred = merged["Label_pred"].tolist()
 
-    metrics = evaluate_performance(true_labels, predicted_labels)
-
-    print(f"\n== {stage} Performance for {model_name} ==")
+    print(f"\n{model_name} — {phase} Evaluation:")
+    metrics = evaluate_performance(y_true, y_pred)
     print(metrics)
 
-# Main Loop
-for model_name, paths in models.items():
-    print(f"\nEvaluating Model: {model_name}")
-    evaluate(paths["pretrained"], model_name, "Pretrained")
-    evaluate(paths["fine_tuned"], model_name, "Fine-tuned")
+# Main script
+if __name__ == "__main__":
+    print("Starting BIO-tagged Evaluation of All Models...\n")
+    ground_truth_df = load_ground_truth()
+
+    for model, paths in models.items():
+        print(f"\n==== {model} =====")
+        evaluate_model(model, "Pretrained", paths["pretrained"], ground_truth_df)
+        evaluate_model(model, "Fine-tuned", paths["fine_tuned"], ground_truth_df)

@@ -1,44 +1,72 @@
 # preprocessing_utils.py
+
 import re
 import spacy
-from nltk.corpus import stopwords
 import nltk
+from nltk.corpus import stopwords
 
-nltk.download('stopwords')
+# Download NLTK stopwords if not present
+nltk.download("stopwords")
 
-# Load SpaCy model
-nlp_pos = spacy.load('en_core_web_sm')
+# Load SpaCy POS tagger
+nlp_pos = spacy.load("en_core_web_sm")
 
-# Function to clean text
+# TEXT CLEANING FUNCTION
+
 def clean_text(text):
+    """
+    Lowercases text, removes unwanted characters, and filters tokens
+    by POS (nouns and adjectives) and stopwords.
+    """
     text = text.lower()
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"[^a-zA-Z0-9\s/\.\-]", "", text)
+    text = re.sub(r"[^a-zA-Z0-9\s/\.\-]", "", text)  # Retain clinical slashes/dashes
 
-    stop_words = set(stopwords.words('english'))
+    stop_words = set(stopwords.words("english"))
     doc = nlp_pos(text)
-    cleaned_tokens = [token.text for token in doc if token.text not in stop_words and token.pos_ in ['NOUN', 'ADJ']]
 
-    return " ".join(cleaned_tokens)
+    filtered = [
+        token.text for token in doc
+        if token.text not in stop_words and token.pos_ in ["NOUN", "ADJ"]
+    ]
 
-# Remove negated or negative sentences
+    return " ".join(filtered)
+
+
+# NEGATIVE PHRASE REMOVAL FUNCTION
 def remove_negative_phrases(text):
-    negative_indicators = ['no', 'not', 'negative', 'denying', 'na']
-    sentences = re.split(r'(?<=\.)\s+', text)
-    filtered_sentences = [sentence for sentence in sentences if not any(neg in sentence.lower() for neg in negative_indicators)]
-    return ' '.join(filtered_sentences)
+    """
+    Removes sentences that contain negative indicators like 'no', 'not', etc.
+    Useful before medical entity extraction to avoid false negatives.
+    """
+    negative_keywords = ["no", "not", "negative", "denying", "na"]
+    sentences = re.split(r"(?<=\.)\s+", text)
+    filtered = [
+        sentence for sentence in sentences
+        if not any(neg in sentence.lower() for neg in negative_keywords)
+    ]
+    return " ".join(filtered)
 
-# Split text into chunks
+
+# TEXT CHUNKING UTILITY FUNCTION
+
 def split_text_into_chunks(text, max_length=512):
-    sentences = re.split(r'(?<=\.)\s+', text)
+    """
+    Splits large input text into manageable chunks (by sentence),
+    respecting token limit constraints for models like BERT.
+    """
+    sentences = re.split(r"(?<=\.)\s+", text)
     chunks = []
     current_chunk = ""
+
     for sentence in sentences:
         if len(current_chunk) + len(sentence) <= max_length:
             current_chunk += sentence + " "
         else:
             chunks.append(current_chunk.strip())
             current_chunk = sentence + " "
+    
     if current_chunk:
         chunks.append(current_chunk.strip())
+
     return chunks
