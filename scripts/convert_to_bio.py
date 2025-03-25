@@ -55,10 +55,10 @@ def convert_doccano_csv_to_bio(input_path, output_path):
             
             sentence_id += 1
 
-    print(f"[✅] BIO-tagged output saved to: {output_path}")
+    print(f"BIO-tagged output saved to: {output_path}")
 
 if __name__ == "__main__":
-    input_file = "input_annotations.csv"  # 👈 Replace or keep general for GitHub users
+    input_file = "input_annotations.csv"  # Replace or keep general for GitHub users
     output_file = "bio_tagged_output.csv"
 
     convert_doccano_csv_to_bio(input_file, output_file)
