@@ -2,5 +2,7 @@ torch
 transformers
 pandas
 nltk
-sklearn
+scikit-learn
 tqdm
+spacy
+#python -m spacy download en_core_web_sm
