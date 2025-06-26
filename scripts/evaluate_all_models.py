@@ -83,6 +83,14 @@ def evaluate_model(model_name, phase, prediction_file, ground_truth_df):
     metrics = evaluate_performance(y_true, y_pred)
     print(metrics)
 
+    
+    macro_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    weighted_f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+
+    print(f"Macro F1 Score:     {round(macro_f1, 4)}")
+    print(f"Weighted F1 Score:  {round(weighted_f1, 4)}")
+
+
 # Main script
 if __name__ == "__main__":
     print("Starting BIO-tagged Evaluation of All Models...\n")
