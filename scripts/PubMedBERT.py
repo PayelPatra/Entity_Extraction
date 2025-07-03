@@ -33,11 +33,16 @@ label2id = {
 }
 id2label = {v: k for k, v in label2id.items()}
 
-# Use PubMedBERT model
+# PubMedBERT with explicit dropout settings (optional)
 model_name = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForTokenClassification.from_pretrained(
-    model_name, num_labels=len(label2id), id2label=id2label, label2id=label2id
+    model_name,
+    num_labels=len(label2id),
+    id2label=id2label,
+    label2id=label2id,
+    hidden_dropout_prob=0.1,
+    attention_probs_dropout_prob=0.1
 )
 
 def preprocess_text_files(directory_path):
@@ -69,7 +74,6 @@ class CustomNERDataset(Dataset):
     def __len__(self):
         return len(self.texts)
 
-# Load annotated dataset
 df = pd.read_csv(ANNOTATED_DATA_PATH)
 texts = df['text'].tolist()
 bio_labels = df['bio_labels'].apply(lambda x: x.split()).tolist()
@@ -89,13 +93,22 @@ def extract_entities(text):
     tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"].squeeze())
     return [(tok, id2label.get(pred, 'O')) for tok, pred in zip(tokens, predictions)]
 
+
 training_args = TrainingArguments(
     output_dir=MODEL_DIR,
-    num_train_epochs=10,
+    seed=42,
+    num_train_epochs=20,
     per_device_train_batch_size=16,
+    eval_strategy="epoch",
     save_strategy="epoch",
-    evaluation_strategy="epoch"
+    learning_rate=5e-5,
+    warmup_steps=300,
+    lr_scheduler_type="linear",
+    dataloader_drop_last=True,
+    logging_dir=os.path.join(MODEL_DIR, "logs"),
+    logging_steps=100
 )
+
 trainer = Trainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=val_dataset)
 trainer.train()
 
@@ -114,7 +127,6 @@ print("Test Metrics:", test_metrics)
 model.save_pretrained(MODEL_DIR)
 tokenizer.save_pretrained(MODEL_DIR)
 
-# Inference on raw clinical text files
 raw_df = preprocess_text_files(DATA_DIR)
 results_pretrained = []
 results_finetuned = []
@@ -138,7 +150,6 @@ for _, row in raw_df.iterrows():
         "predicted_entities": finetuned_str
     })
 
-# Save predictions
 pretrained_csv = os.path.join(OUTPUT_DIR, "pretrained_entity_extraction_results_pubmedbert.csv")
 finetuned_csv = os.path.join(OUTPUT_DIR, "finetuned_entity_extraction_results_pubmedbert.csv")
 
