@@ -44,7 +44,9 @@ model = AutoModelForTokenClassification.from_pretrained(
     model_name,
     num_labels=len(label2id),
     id2label=id2label,
-    label2id=label2id
+    label2id=label2id,
+    hidden_dropout_prob=0.1,  
+    attention_probs_dropout_prob=0.1  
 )
 
 # Function to clean and prepare .txt files
@@ -64,7 +66,7 @@ df = pd.read_csv(ANNOTATED_DATA_PATH)
 texts = df['text'].tolist()
 labels = df['bio_labels'].apply(lambda x: x.split()).tolist()
 
-#splitting of training-validation-testing data
+# Split into train, val, test
 train_val_texts, test_texts, train_val_labels, test_labels = train_test_split(
     texts, labels, test_size=0.15, random_state=42
 )
@@ -111,15 +113,23 @@ def extract_entities(text):
     tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"].squeeze())
     return [(tok, id2label.get(pred, "O")) for tok, pred in zip(tokens, predictions)]
 
-# Training configuration
+
 training_args = TrainingArguments(
     output_dir=MODEL_DIR,
+    seed=42,
     num_train_epochs=20,
     per_device_train_batch_size=16,
-    evaluation_strategy="epoch",
-    save_strategy="epoch"
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=5e-5,
+    warmup_steps=300,
+    lr_scheduler_type="linear",
+    dataloader_drop_last=True,
+    logging_dir=os.path.join(MODEL_DIR, "logs"),
+    logging_steps=100
 )
 
+# Trainer setup
 trainer = Trainer(
     model=model,
     args=training_args,
@@ -148,15 +158,14 @@ print("Test Metrics:", test_metrics)
 model.save_pretrained(MODEL_DIR)
 tokenizer.save_pretrained(MODEL_DIR)
 
-# Inference on raw .txt files (real-world data)
+# Inference on raw .txt files
 raw_df = preprocess_texts_from_dir(DATA_DIR)
 results_pretrained = []
 results_finetuned = []
 
 for _, row in raw_df.iterrows():
     text = row["Text"]
-    
-    # Pretrained prediction
+
     pretrained_entities = extract_entities(text)
     pretrained_str = " ".join([f"{tok}:{tag}" for tok, tag in pretrained_entities])
     results_pretrained.append({
@@ -165,7 +174,6 @@ for _, row in raw_df.iterrows():
         "predicted_entities": pretrained_str
     })
 
-    # Finetuned prediction (same function, model is now trained)
     finetuned_entities = extract_entities(text)
     finetuned_str = " ".join([f"{tok}:{tag}" for tok, tag in finetuned_entities])
     results_finetuned.append({
@@ -174,7 +182,7 @@ for _, row in raw_df.iterrows():
         "predicted_entities": finetuned_str
     })
 
-# Save CSVs
+# Save outputs
 pretrained_csv = os.path.join(OUTPUT_DIR, "pretrained_entity_extraction_results_biobert.csv")
 finetuned_csv = os.path.join(OUTPUT_DIR, "finetuned_entity_extraction_results_biobert.csv")
 
