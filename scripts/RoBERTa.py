@@ -35,9 +35,15 @@ id2label = {v: k for k, v in label2id.items()}
 
 model_name = "roberta-base"
 tokenizer = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForTokenClassification.from_pretrained(model_name, num_labels=len(label2id), label2id=label2id, id2label=id2label)
+model = AutoModelForTokenClassification.from_pretrained(
+    model_name,
+    num_labels=len(label2id),
+    label2id=label2id,
+    id2label=id2label,
+    hidden_dropout_prob=0.1,
+    attention_probs_dropout_prob=0.1
+)
 
-# Preprocessing for raw clinical notes
 def preprocess_text_files(directory_path):
     cleaned_data = []
     for fname in os.listdir(directory_path):
@@ -49,7 +55,6 @@ def preprocess_text_files(directory_path):
             cleaned_data.append({"Filename": fname, "Text": cleaned})
     return pd.DataFrame(cleaned_data)
 
-# Dataset class
 class CustomNERDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_len=128):
         self.texts = texts
@@ -68,12 +73,12 @@ class CustomNERDataset(Dataset):
     def __len__(self):
         return len(self.texts)
 
-# Load annotated BIO-tagged data
+# Load BIO-tagged annotated dataset
 df = pd.read_csv(ANNOTATED_DATA_PATH)
 texts = df["text"].tolist()
 bio_labels = df["bio_labels"].apply(lambda x: x.split()).tolist()
 
-# Split data into training-validation-testing as 70%-15%-15%..............
+# Split into 70% train, 15% val, 15% test
 train_val_texts, test_texts, train_val_labels, test_labels = train_test_split(texts, bio_labels, test_size=0.15, random_state=42)
 train_texts, val_texts, train_labels, val_labels = train_test_split(train_val_texts, train_val_labels, test_size=0.176, random_state=42)
 
@@ -81,7 +86,6 @@ train_dataset = CustomNERDataset(train_texts, train_labels, tokenizer)
 val_dataset = CustomNERDataset(val_texts, val_labels, tokenizer)
 test_dataset = CustomNERDataset(test_texts, test_labels, tokenizer)
 
-# Entity extraction from model
 def extract_entities(text):
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=128)
     with torch.no_grad():
@@ -90,30 +94,43 @@ def extract_entities(text):
     tokens = tokenizer.convert_ids_to_tokens(inputs["input_ids"].squeeze())
     return [(tok, id2label.get(pred, "O")) for tok, pred in zip(tokens, preds)]
 
-# Training
-training_args = TrainingArguments(output_dir=MODEL_DIR, num_train_epochs=10, per_device_train_batch_size=16, evaluation_strategy="epoch", save_strategy="epoch")
+
+training_args = TrainingArguments(
+    output_dir=MODEL_DIR,
+    seed=42,
+    num_train_epochs=20,
+    per_device_train_batch_size=16,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=5e-5,
+    warmup_steps=300,
+    lr_scheduler_type="linear",
+    dataloader_drop_last=True,
+    logging_dir=os.path.join(MODEL_DIR, "logs"),
+    logging_steps=100
+)
+
 trainer = Trainer(model=model, args=training_args, train_dataset=train_dataset, eval_dataset=val_dataset)
 trainer.train()
 
-# Evaluation on validation
+# Evaluation
 val_results = trainer.predict(val_dataset)
 val_preds = torch.argmax(torch.tensor(val_results.predictions), dim=2).flatten().tolist()
 val_labels_flat = torch.tensor(val_results.label_ids).flatten().tolist()
 val_metrics = evaluate_performance(val_labels_flat, val_preds)
 print("Validation Metrics:", val_metrics)
 
-# Evaluation on test set
 test_results = trainer.predict(test_dataset)
 test_preds = torch.argmax(torch.tensor(test_results.predictions), dim=2).flatten().tolist()
 test_labels_flat = torch.tensor(test_results.label_ids).flatten().tolist()
 test_metrics = evaluate_performance(test_labels_flat, test_preds)
 print("Test Metrics:", test_metrics)
 
-# Save the fine-tuned model
+# Save model
 model.save_pretrained(MODEL_DIR)
 tokenizer.save_pretrained(MODEL_DIR)
 
-# Inference on raw clinical text
+# Inference on clinical notes
 raw_df = preprocess_text_files(DATA_DIR)
 results_pretrained = []
 results_finetuned = []
@@ -121,7 +138,6 @@ results_finetuned = []
 for _, row in raw_df.iterrows():
     text = row["Text"]
 
-    # Entity extraction (same function used both before and after fine-tuning)
     pretrained_ents = extract_entities(text)
     results_pretrained.append({
         "Filename": row["Filename"],
@@ -136,7 +152,6 @@ for _, row in raw_df.iterrows():
         "predicted_entities": " ".join([f"{tok}:{tag}" for tok, tag in finetuned_ents])
     })
 
-# Save predictions
 pd.DataFrame(results_pretrained).to_csv(os.path.join(OUTPUT_DIR, "pretrained_entity_extraction_results_roberta.csv"), index=False)
 pd.DataFrame(results_finetuned).to_csv(os.path.join(OUTPUT_DIR, "finetuned_entity_extraction_results_roberta.csv"), index=False)
 
