@@ -114,7 +114,7 @@ def extract_entities(text):
 # Training configuration
 training_args = TrainingArguments(
     output_dir=MODEL_DIR,
-    num_train_epochs=10,
+    num_train_epochs=20,
     per_device_train_batch_size=16,
     evaluation_strategy="epoch",
     save_strategy="epoch"
